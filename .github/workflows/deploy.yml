@@ -27,24 +27,57 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GIT_REPO_URL: ${{ github.repositoryUrl }}
         run: |
           set -e
           
           echo "🚀 Starting deployment..."
+          echo "🔗 Repository: ${{ github.repositoryUrl }}"
           
           # SSH into the server and execute deployment commands
-          ssh $SSH_USER@$SSH_HOST "cd '$DEPLOY_PATH' && bash -s" << 'ENDSSH'
+          ssh $SSH_USER@$SSH_HOST bash -s << ENDSSH
             set -e
             
+            DEPLOY_PATH="$DEPLOY_PATH"
+            GIT_REPO_URL="$GIT_REPO_URL"
+            
+            echo "📍 Deployment path: $DEPLOY_PATH"
+            
+            # Check if directory exists, if not create it
+            if [ ! -d "$DEPLOY_PATH" ]; then
+              echo "📁 Creating deployment directory..."
+              mkdir -p "$DEPLOY_PATH"
+            fi
+            
+            cd "$DEPLOY_PATH"
             echo "📍 Current directory: $(pwd)"
             
-            # Pull latest code from main branch
-            echo "📥 Pulling latest code from main branch..."
-            git pull
+            # Check if it's a git repository
+            if [ ! -d ".git" ]; then
+              echo "🆕 First time setup: Cloning repository..."
+              echo "🔗 Repository URL: $GIT_REPO_URL"
+              git clone "$GIT_REPO_URL" .
+              echo "✅ Repository cloned successfully!"
+            else
+              echo "🔄 Existing repository found"
+              echo "🔗 Git Remote Repository:"
+              git remote -v || echo "No git remote configured"
+              
+              # Update remote if it doesn't match
+              CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null || echo "")
+              if [ "$CURRENT_REMOTE" != "$GIT_REPO_URL" ]; then
+                echo "🔄 Updating git remote to: $GIT_REPO_URL"
+                git remote set-url origin "$GIT_REPO_URL" || git remote add origin "$GIT_REPO_URL"
+              fi
+              
+              # Pull latest code from main branch
+              echo "📥 Pulling latest code from origin/main branch..."
+              git pull origin main
+            fi
             
             # Stop PM2 processes
             echo "🛑 Stopping PM2 processes..."
-            pm2 stop all
+            pm2 stop all || echo "No PM2 processes to stop"
             
             # Start PM2 processes
             echo "▶️ Starting PM2 processes..."

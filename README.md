@@ -36,6 +36,8 @@ You need to configure the following secrets in your GitHub repository:
    - **`DEPLOY_PATH`**: The path on your server where the code should be deployed
      - Example: `/var/www/myapp` or `/home/ubuntu/myapp`
 
+**Note**: The repository URL is automatically detected from GitHub Actions context, so you don't need to configure it manually!
+
 ### 2. SSH Key Setup
 
 If you don't have an SSH key pair yet:
@@ -97,14 +99,21 @@ Make sure your AWS EC2 instance has:
 
 ### 5. Git Configuration on Server
 
-Ensure your deployment path on the server is a git repository:
+**Good News**: The workflow automatically handles git repository setup! 
+
+- **First Time**: If the deployment directory doesn't exist or isn't a git repository, the workflow will automatically clone your repository using the GitHub repository URL (automatically detected from GitHub Actions).
+- **Subsequent Deployments**: The workflow will pull the latest code from the `main` branch.
+
+**Manual Setup (Optional)**: If you prefer to set up the repository manually before the first deployment:
 
 ```bash
 cd /path/to/your/deploy/path
-git init
-git remote add origin https://github.com/your-username/your-repo.git
-# Or use SSH: git remote add origin git@github.com:your-username/your-repo.git
+git clone https://github.com/your-username/your-repo.git .
 ```
+
+**Note**: The workflow uses `git pull origin main`, so make sure:
+- The branch is `main` (or update the workflow to match your branch name)
+- The repository URL is automatically provided by GitHub Actions (no secret needed!)
 
 ## Workflow Behavior
 
