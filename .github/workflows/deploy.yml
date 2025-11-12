@@ -18,6 +18,43 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
+      - name: Extract and Setup Public Key
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          
+          # Save private key temporarily to extract public key
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/temp_key
+          chmod 600 ~/.ssh/temp_key
+          
+          # Extract public key from private key
+          ssh-keygen -y -f ~/.ssh/temp_key > ~/.ssh/public_key.pub 2>/dev/null || {
+            echo "Warning: Could not extract public key automatically"
+            rm -f ~/.ssh/temp_key ~/.ssh/public_key.pub
+            exit 0
+          }
+          
+          PUBLIC_KEY=$(cat ~/.ssh/public_key.pub)
+          echo "Extracted public key: ${PUBLIC_KEY:0:50}..."
+          
+          # Clean up temporary private key
+          rm -f ~/.ssh/temp_key
+          
+          # Try to add public key to ubuntu's authorized_keys on server
+          # First, try connecting as ubuntu (if key is already there)
+          ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+          
+          # Try to add the key (this will work if we can connect via another method)
+          # We'll try to connect and add it automatically
+          echo "Attempting to setup public key on server..."
+          
+          # Save public key to a file for use in next steps
+          echo "$PUBLIC_KEY" > ~/.ssh/public_key.pub
+          echo "PUBLIC_KEY_FILE=~/.ssh/public_key.pub" >> $GITHUB_ENV
+
       - name: Configure SSH
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -37,6 +74,83 @@ jobs:
             IdentitiesOnly yes
           EOF
           chmod 600 ~/.ssh/config
+          
+          # Verify SSH agent has the key loaded
+          echo "SSH keys loaded in agent:"
+          ssh-add -l || echo "Warning: No keys found in SSH agent"
+          echo ""
+          echo "SSH will connect as user: ubuntu"
+
+      - name: Setup Public Key on Server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          # Read public key from file
+          PUBLIC_KEY=$(cat ~/.ssh/public_key.pub)
+          
+          # Try to add public key to ubuntu's authorized_keys automatically
+          echo "Setting up public key on server..."
+          
+          # Try connecting and adding the key
+          ssh $SSH_HOST "PUBLIC_KEY='$PUBLIC_KEY' bash -s" << 'ENDSSH' || {
+            echo "Could not automatically setup key. Will try connection test..."
+            exit 0
+          }
+            set -e
+            # Create .ssh directory if it doesn't exist
+            sudo mkdir -p /home/ubuntu/.ssh
+            sudo chmod 700 /home/ubuntu/.ssh
+            
+            # Add public key if not already present
+            if [ -f /home/ubuntu/.ssh/authorized_keys ]; then
+              if ! grep -qF "$PUBLIC_KEY" /home/ubuntu/.ssh/authorized_keys 2>/dev/null; then
+                echo "$PUBLIC_KEY" | sudo tee -a /home/ubuntu/.ssh/authorized_keys > /dev/null
+                echo "Public key added to authorized_keys"
+              else
+                echo "Public key already exists in authorized_keys"
+              fi
+            else
+              echo "$PUBLIC_KEY" | sudo tee /home/ubuntu/.ssh/authorized_keys > /dev/null
+              echo "Created authorized_keys file with public key"
+            fi
+            
+            # Set correct permissions
+            sudo chmod 600 /home/ubuntu/.ssh/authorized_keys
+            sudo chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys
+            sudo chown ubuntu:ubuntu /home/ubuntu/.ssh
+            
+            echo "Public key setup completed successfully"
+          ENDSSH
+
+      - name: Test SSH Connection
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          echo "Testing SSH connection to ubuntu@$SSH_HOST..."
+          if ssh $SSH_HOST "echo 'SSH connection successful!'; echo 'Logged in as: \$(whoami)'" 2>&1; then
+            echo ""
+            echo "✅ SSH connection test passed!"
+          else
+            echo ""
+            echo "❌ SSH connection test failed!"
+            echo ""
+            echo "=========================================="
+            echo "TROUBLESHOOTING:"
+            echo "=========================================="
+            echo "The SSH key setup failed. Please manually add the public key to your EC2 server:"
+            echo ""
+            echo "Public key to add:"
+            cat ~/.ssh/public_key.pub
+            echo ""
+            echo "Run these commands on your EC2 server:"
+            echo "  sudo mkdir -p /home/ubuntu/.ssh"
+            echo "  sudo chmod 700 /home/ubuntu/.ssh"
+            echo "  echo '$PUBLIC_KEY' | sudo tee -a /home/ubuntu/.ssh/authorized_keys"
+            echo "  sudo chmod 600 /home/ubuntu/.ssh/authorized_keys"
+            echo "  sudo chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys"
+            echo ""
+            exit 1
+          fi
 
       - name: Deploy and restart PM2
         env:
