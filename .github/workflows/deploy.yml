@@ -21,49 +21,31 @@ jobs:
       - name: Configure SSH
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
           
-          # Set default user to ubuntu if not specified
-          SSH_USER=${SSH_USER:-ubuntu}
-          
-          # Create SSH config to force ubuntu user
+          # Create SSH config for ubuntu user
           cat > ~/.ssh/config << EOF
           Host $SSH_HOST
-            User $SSH_USER
+            User ubuntu
             StrictHostKeyChecking no
             UserKnownHostsFile ~/.ssh/known_hosts
             PreferredAuthentications publickey
             IdentitiesOnly yes
           EOF
           chmod 600 ~/.ssh/config
-          
-          # Verify SSH agent has the key loaded
-          echo "SSH keys loaded in agent:"
-          ssh-add -l || echo "Warning: No keys found in SSH agent"
-          echo ""
-          echo "SSH will connect as user: $SSH_USER"
 
       - name: Deploy and restart PM2
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           GIT_REPO_URL: ${{ github.repositoryUrl }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          
-          # Ensure SSH_USER defaults to ubuntu if empty, and validate it's not root
-          SSH_USER=${SSH_USER:-ubuntu}
-          
-          if [ "$SSH_USER" = "root" ]; then
-            echo "Error: SSH_USER cannot be 'root'. Please set SSH_USER secret to 'ubuntu'"
-            exit 1
-          fi
           
           # Convert git:// URL to https:// if needed
           REPO_URL="$GIT_REPO_URL"
@@ -71,13 +53,14 @@ jobs:
             REPO_URL=$(echo "$REPO_URL" | sed 's|git://|https://|')
           fi
           
-          # Verify SSH_USER is set correctly
-          echo "Using SSH user: $SSH_USER"
-          echo "SSH host: $SSH_HOST"
-          echo "Starting deployment to $SSH_USER@$SSH_HOST:$DEPLOY_PATH"
+          # Add token to URL if GITHUB_TOKEN is provided
+          if [ -n "$GITHUB_TOKEN" ]; then
+            REPO_URL=$(echo "$REPO_URL" | sed "s|https://|https://$GITHUB_TOKEN@|")
+          fi
           
-          # Use SSH config file which forces ubuntu user
-          if ! ssh $SSH_HOST "DEPLOY_PATH='$DEPLOY_PATH' GIT_REPO_URL='$REPO_URL' bash -s" << 'ENDSSH'
+          echo "Starting deployment to ubuntu@$SSH_HOST:$DEPLOY_PATH"
+          
+          ssh $SSH_HOST "DEPLOY_PATH='$DEPLOY_PATH' REPO_URL='$REPO_URL' GITHUB_TOKEN='$GITHUB_TOKEN' bash -s" << 'ENDSSH'
             set -e
             
             # Create deployment directory if it doesn't exist
@@ -95,17 +78,39 @@ jobs:
                 echo "Warning: Directory is not empty. Removing existing contents..."
                 rm -rf ./* ./.* 2>/dev/null || true
               fi
-              git clone "$GIT_REPO_URL" .
+              
+              # Clone repository with token if provided
+              if [ -n "$GITHUB_TOKEN" ]; then
+                git clone "$REPO_URL" . || {
+                  echo "Git clone failed, trying with token authentication..."
+                  REPO_URL_WITH_TOKEN=$(echo "$REPO_URL" | sed "s|https://|https://$GITHUB_TOKEN@|")
+                  git clone "$REPO_URL_WITH_TOKEN" .
+                }
+              else
+                git clone "$REPO_URL" .
+              fi
             else
               # Update remote URL if needed
               CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null || echo "")
-              if [ "$CURRENT_REMOTE" != "$GIT_REPO_URL" ]; then
+              CLEAN_REPO_URL=$(echo "$REPO_URL" | sed 's|https://.*@||')
+              
+              if [ "$CURRENT_REMOTE" != "$CLEAN_REPO_URL" ] && [ "$CURRENT_REMOTE" != "$REPO_URL" ]; then
                 echo "Updating git remote URL..."
-                git remote set-url origin "$GIT_REPO_URL" 2>/dev/null || git remote add origin "$GIT_REPO_URL"
+                git remote set-url origin "$CLEAN_REPO_URL" 2>/dev/null || git remote add origin "$CLEAN_REPO_URL"
               fi
               
               echo "Pulling latest changes..."
-              git pull origin main
+              
+              # Pull with token if needed
+              if [ -n "$GITHUB_TOKEN" ]; then
+                git pull origin main || {
+                  echo "Git pull failed, trying with token authentication..."
+                  git -c credential.helper='!f() { echo "username=$GITHUB_TOKEN"; echo "password=$GITHUB_TOKEN"; }; f' pull origin main || \
+                  git pull https://$GITHUB_TOKEN@$(echo "$REPO_URL" | sed 's|https://||' | sed 's|.*@||') main
+                }
+              else
+                git pull origin main
+              fi
             fi
             
             # Install dependencies
@@ -116,51 +121,72 @@ jobs:
               echo "No package.json found, skipping npm install"
             fi
             
-            # Restart PM2 processes
-            echo "Stopping PM2 processes..."
-            pm2 stop all || true
+            # Get PM2 process ID if process exists
+            PM2_ID=""
+            PM2_NAME=""
             
-            echo "Starting PM2 processes..."
-            pm2 start ecosystem.config.js || pm2 start app.js || pm2 start npm -- start
-            
-            # Wait a moment for processes to initialize
-            sleep 2
-            
-            # Get and display process IDs assigned by PM2
-            echo ""
-            echo "PM2 Process IDs (assigned by PM2):"
-            PM2_LIST=$(pm2 jlist 2>/dev/null || echo "[]")
-            if command -v jq &> /dev/null; then
-              echo "$PM2_LIST" | jq -r '.[] | select(.pm2_env.status == "online") | "ID: \(.pm_id) | Name: \(.name) | Status: \(.pm2_env.status)"'
-            else
-              pm2 list
+            if command -v pm2 &> /dev/null; then
+              # Try to find existing PM2 process by name or ID
+              PM2_LIST=$(pm2 jlist 2>/dev/null || echo "[]")
+              
+              if [ "$PM2_LIST" != "[]" ] && [ -n "$PM2_LIST" ]; then
+                if command -v jq &> /dev/null; then
+                  # Get the first online process ID
+                  PM2_ID=$(echo "$PM2_LIST" | jq -r '.[] | select(.pm2_env.status == "online") | .pm_id' | head -n 1)
+                  PM2_NAME=$(echo "$PM2_LIST" | jq -r '.[] | select(.pm2_env.status == "online") | .name' | head -n 1)
+                else
+                  # Fallback: get ID from pm2 list
+                  PM2_ID=$(pm2 list | grep -E "^\| [0-9]+" | head -n 1 | awk '{print $2}' | tr -d '|' | xargs)
+                fi
+              fi
             fi
             
+            # Stop PM2 process if it exists
+            if [ -n "$PM2_ID" ] && [ "$PM2_ID" != "null" ] && [ "$PM2_ID" != "" ]; then
+              echo "Stopping PM2 process (ID: $PM2_ID)..."
+              pm2 stop $PM2_ID || pm2 stop "$PM2_NAME" || pm2 stop all || true
+            else
+              echo "No existing PM2 process found, stopping all processes..."
+              pm2 stop all || true
+            fi
+            
+            # Start PM2 process
+            echo "Starting PM2 process..."
+            if [ -f "ecosystem.config.js" ]; then
+              pm2 start ecosystem.config.js
+              NEW_PM2_ID=$(pm2 jlist 2>/dev/null | jq -r '.[] | select(.name != null) | .pm_id' | head -n 1 || pm2 list | grep -E "^\| [0-9]+" | head -n 1 | awk '{print $2}' | tr -d '|' | xargs)
+            elif [ -f "app.js" ]; then
+              pm2 start app.js
+              NEW_PM2_ID=$(pm2 jlist 2>/dev/null | jq -r '.[] | select(.name != null) | .pm_id' | head -n 1 || pm2 list | grep -E "^\| [0-9]+" | head -n 1 | awk '{print $2}' | tr -d '|' | xargs)
+            else
+              pm2 start npm -- start
+              NEW_PM2_ID=$(pm2 jlist 2>/dev/null | jq -r '.[] | select(.name != null) | .pm_id' | head -n 1 || pm2 list | grep -E "^\| [0-9]+" | head -n 1 | awk '{print $2}' | tr -d '|' | xargs)
+            fi
+            
+            # Wait for process to initialize
+            sleep 2
+            
+            # Display PM2 status and process ID
             echo ""
-            echo "PM2 Status:"
+            echo "PM2 Process Status:"
             pm2 status
+            
+            if [ -n "$NEW_PM2_ID" ] && [ "$NEW_PM2_ID" != "null" ] && [ "$NEW_PM2_ID" != "" ]; then
+              echo ""
+              echo "PM2 Process ID: $NEW_PM2_ID"
+            fi
           ENDSSH
-          then
-            echo "Deployment completed successfully"
-          else
-            echo ""
-            echo "=========================================="
-            echo "SSH Connection Failed!"
-          fi
+          
+          echo "Deployment completed successfully"
 
       - name: Capture PM2 logs on failure
         if: failure()
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
-          # Ensure SSH_USER defaults to ubuntu if empty
-          SSH_USER=${SSH_USER:-ubuntu}
-          
           echo "Capturing PM2 logs due to deployment failure..."
           
-          # Use SSH config file which forces ubuntu user
           ssh $SSH_HOST "cd '$DEPLOY_PATH' && bash -s" << 'ENDSSH'
             echo "=== PM2 Status ==="
             pm2 status || echo "PM2 status command failed"
