@@ -1,4 +1,4 @@
-name: Deploy to Excloud with PM2
+name: Deploy to AWS EC2 with PM2
 
 on:
   push:
@@ -114,6 +114,10 @@ jobs:
               echo "✅ All PM2 processes are running successfully!"
             fi
           ENDSSH
+          
+          echo ""
+          echo "🎉✨ Deployment completed successfully! Hello World! ✨🎉"
+          echo "🚀 Your application is now live on AWS EC2!"
 
       - name: Capture PM2 logs on failure
         if: failure()
