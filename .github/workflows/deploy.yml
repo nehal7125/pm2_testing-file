@@ -92,10 +92,7 @@ jobs:
           echo "Setting up public key on server..."
           
           # Try connecting and adding the key
-          ssh $SSH_HOST "PUBLIC_KEY='$PUBLIC_KEY' bash -s" << 'ENDSSH' || {
-            echo "Could not automatically setup key. Will try connection test..."
-            exit 0
-          }
+          if ssh $SSH_HOST "PUBLIC_KEY='$PUBLIC_KEY' bash -s" << 'ENDSSH'
             set -e
             # Create .ssh directory if it doesn't exist
             sudo mkdir -p /home/ubuntu/.ssh
@@ -121,6 +118,11 @@ jobs:
             
             echo "Public key setup completed successfully"
           ENDSSH
+          then
+            echo "Public key setup completed successfully"
+          else
+            echo "Could not automatically setup key. Will try connection test..."
+          fi
 
       - name: Test SSH Connection
         env:
