@@ -31,19 +31,23 @@ jobs:
         run: |
           set -e
           
+          # Convert git:// URL to https:// URL format
+          REPO_URL="${{ github.repositoryUrl }}"
+          if [[ "$REPO_URL" == git://* ]]; then
+            REPO_URL=$(echo "$REPO_URL" | sed 's|git://|https://|')
+          fi
+          
           echo "🚀 Starting deployment..."
-          echo "🔗 Repository: ${{ github.repositoryUrl }}"
+          echo "🔗 Repository: $REPO_URL"
           echo "📂 Deployment Path: ${{ secrets.DEPLOY_PATH }}"
           echo ""
           
           # SSH into the server and execute deployment commands
-          ssh $SSH_USER@$SSH_HOST bash -s << ENDSSH
+          ssh $SSH_USER@$SSH_HOST "DEPLOY_PATH='$DEPLOY_PATH' GIT_REPO_URL='$REPO_URL' bash -s" << 'ENDSSH'
             set -e
             
-            DEPLOY_PATH="$DEPLOY_PATH"
-            GIT_REPO_URL="$GIT_REPO_URL"
-            
             echo "📍 Deployment path: $DEPLOY_PATH"
+            echo "📍 Server hostname: $(hostname)"
             
             # Check if directory exists, if not create it
             if [ ! -d "$DEPLOY_PATH" ]; then
@@ -51,13 +55,21 @@ jobs:
               mkdir -p "$DEPLOY_PATH"
             fi
             
-            cd "$DEPLOY_PATH"
+            cd "$DEPLOY_PATH" || { echo "❌ Failed to change to directory: $DEPLOY_PATH"; exit 1; }
             echo "📍 Current directory: $(pwd)"
             
             # Check if it's a git repository
             if [ ! -d ".git" ]; then
               echo "🆕 First time setup: Cloning repository..."
               echo "🔗 Repository URL: $GIT_REPO_URL"
+              
+              # Remove existing directory contents if it exists but is not a git repo
+              if [ "$(ls -A . 2>/dev/null)" ]; then
+                echo "⚠️ Directory is not empty. Removing existing contents..."
+                rm -rf ./*
+                rm -rf ./.* 2>/dev/null || true
+              fi
+              
               git clone "$GIT_REPO_URL" .
               echo "✅ Repository cloned successfully!"
             else
