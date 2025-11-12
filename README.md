@@ -3,7 +3,7 @@
 This repository contains a GitHub Actions workflow that automatically deploys your application to an AWS EC2 instance (Ubuntu) and manages PM2 processes.
 
 ## Features
-
+redeploy
 - ✅ Automatic deployment on code push
 - ✅ SSH connection to AWS EC2 instance
 - ✅ Automatic code pull from repository
