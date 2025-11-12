@@ -3,7 +3,7 @@ name: Deploy to AWS EC2 with PM2
 on:
   push:
     branches:
-      - main  # Change this to your default branch (main, master, etc.)
+      - main
 
 jobs:
   deploy:
@@ -31,100 +31,51 @@ jobs:
         run: |
           set -e
           
-          # Convert git:// URL to https:// URL format
-          REPO_URL="${{ github.repositoryUrl }}"
-          if [[ "$REPO_URL" == git://* ]]; then
-            REPO_URL=$(echo "$REPO_URL" | sed 's|git://|https://|')
-          fi
+          echo "Starting deployment to $SSH_HOST:$DEPLOY_PATH"
           
-          echo "🚀 Starting deployment..."
-          echo "🔗 Repository: $REPO_URL"
-          echo "📂 Deployment Path: ${{ secrets.DEPLOY_PATH }}"
-          echo ""
-          
-          # SSH into the server and execute deployment commands
-          ssh $SSH_USER@$SSH_HOST "DEPLOY_PATH='$DEPLOY_PATH' GIT_REPO_URL='$REPO_URL' bash -s" << 'ENDSSH'
+          ssh $SSH_USER@$SSH_HOST "DEPLOY_PATH='$DEPLOY_PATH' GIT_REPO_URL='$GIT_REPO_URL' bash -s" << 'ENDSSH'
             set -e
             
-            echo "📍 Deployment path: $DEPLOY_PATH"
-            echo "📍 Server hostname: $(hostname)"
-            
-            # Check if directory exists, if not create it
+            # Create deployment directory if it doesn't exist
             if [ ! -d "$DEPLOY_PATH" ]; then
-              echo "📁 Creating deployment directory..."
+              echo "Creating deployment directory: $DEPLOY_PATH"
               mkdir -p "$DEPLOY_PATH"
             fi
             
-            cd "$DEPLOY_PATH" || { echo "❌ Failed to change to directory: $DEPLOY_PATH"; exit 1; }
-            echo "📍 Current directory: $(pwd)"
+            cd "$DEPLOY_PATH" || { echo "Error: Failed to change to directory: $DEPLOY_PATH"; exit 1; }
             
-            # Check if it's a git repository
+            # Initialize or update repository
             if [ ! -d ".git" ]; then
-              echo "🆕 First time setup: Cloning repository..."
-              echo "🔗 Repository URL: $GIT_REPO_URL"
-              
-              # Remove existing directory contents if it exists but is not a git repo
+              echo "Initializing repository..."
               if [ "$(ls -A . 2>/dev/null)" ]; then
-                echo "⚠️ Directory is not empty. Removing existing contents..."
-                rm -rf ./*
-                rm -rf ./.* 2>/dev/null || true
+                echo "Warning: Directory is not empty. Removing existing contents..."
+                rm -rf ./* ./.* 2>/dev/null || true
               fi
-              
               git clone "$GIT_REPO_URL" .
-              echo "✅ Repository cloned successfully!"
             else
-              echo "🔄 Existing repository found"
-              echo "🔗 Git Remote Repository:"
-              git remote -v || echo "No git remote configured"
-              
-              # Update remote if it doesn't match
+              # Update remote URL if needed
               CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null || echo "")
               if [ "$CURRENT_REMOTE" != "$GIT_REPO_URL" ]; then
-                echo "🔄 Updating git remote to: $GIT_REPO_URL"
-                git remote set-url origin "$GIT_REPO_URL" || git remote add origin "$GIT_REPO_URL"
+                echo "Updating git remote URL..."
+                git remote set-url origin "$GIT_REPO_URL" 2>/dev/null || git remote add origin "$GIT_REPO_URL"
               fi
               
-              # Pull latest code from main branch
-              echo "📥 Pulling latest code from origin/main branch..."
+              echo "Pulling latest changes..."
               git pull origin main
             fi
             
-            # Stop PM2 processes
-            echo "🛑 Stopping PM2 processes..."
-            pm2 stop all || echo "No PM2 processes to stop"
+            # Restart PM2 processes
+            echo "Stopping PM2 processes..."
+            pm2 stop all || true
             
-            # Start PM2 processes
-            echo "▶️ Starting PM2 processes..."
+            echo "Starting PM2 processes..."
             pm2 start ecosystem.config.js || pm2 start app.js || pm2 start npm -- start
             
-            # Check PM2 status
-            echo "📊 PM2 Status:"
+            echo "PM2 Status:"
             pm2 status
-            
-            # Show running process IDs
-            echo ""
-            echo "🆔 PM2 Process IDs that are running:"
-            PM2_LIST=$(pm2 jlist 2>/dev/null || echo "[]")
-            
-            if command -v jq &> /dev/null; then
-              # Extract and display process IDs using jq
-              RUNNING_IDS=$(echo "$PM2_LIST" | jq -r '.[] | select(.pm2_env.status == "online") | "ID: \(.pm_id) - Name: \(.name)"' 2>/dev/null || echo "")
-              if [ ! -z "$RUNNING_IDS" ]; then
-                echo "$RUNNING_IDS"
-              else
-                echo "No running processes found"
-              fi
-            else
-              # Alternative method without jq
-              echo "$PM2_LIST" | grep -o '"pm_id":[0-9]*' | grep -o '[0-9]*' | while read id; do
-                echo "ID: $id"
-              done
-            fi
           ENDSSH
           
-          echo ""
-          echo "🎉✨ Deployment completed successfully! Hello World! ✨🎉"
-          echo "🚀 Your application is now live on AWS EC2!"
+          echo "Deployment completed successfully"
 
       - name: Capture PM2 logs on failure
         if: failure()
@@ -133,49 +84,28 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
-          echo "🔍 Capturing detailed PM2 logs due to deployment failure..."
+          echo "Capturing PM2 logs due to deployment failure..."
           
           ssh $SSH_USER@$SSH_HOST "cd '$DEPLOY_PATH' && bash -s" << 'ENDSSH'
-            set -e
-            
-            echo "=========================================="
-            echo "📊 Full PM2 Status"
-            echo "=========================================="
+            echo "=== PM2 Status ==="
             pm2 status || echo "PM2 status command failed"
             echo ""
             
-            echo "=========================================="
-            echo "📋 PM2 Process List (JSON)"
-            echo "=========================================="
+            echo "=== PM2 Process List ==="
             pm2 jlist || echo "PM2 jlist command failed"
             echo ""
             
-            echo "=========================================="
-            echo "📋 All PM2 Logs (Last 200 lines)"
-            echo "=========================================="
+            echo "=== PM2 Logs (Last 200 lines) ==="
             pm2 logs --lines 200 --nostream || echo "PM2 logs command failed"
-            echo ""
             
-            # Get all process IDs and show individual logs
+            # Capture individual process logs if available
             PM2_LIST=$(pm2 jlist 2>/dev/null || echo "[]")
-            if [ "$PM2_LIST" != "[]" ] && [ ! -z "$PM2_LIST" ]; then
+            if [ "$PM2_LIST" != "[]" ] && [ -n "$PM2_LIST" ]; then
               if command -v jq &> /dev/null; then
                 for id in $(echo "$PM2_LIST" | jq -r '.[] | .pm_id' 2>/dev/null); do
-                  echo "=========================================="
-                  echo "📋 Detailed logs for PM2 process ID: $id"
-                  echo "=========================================="
-                  pm2 logs $id --lines 100 --nostream || echo "Could not retrieve logs for process $id"
                   echo ""
-                done
-              else
-                # Alternative: get IDs from PM2 status
-                PM2_IDS=$(pm2 jlist 2>/dev/null | grep -o '"pm_id":[0-9]*' | grep -o '[0-9]*' || echo "")
-                for id in $PM2_IDS; do
-                  echo "=========================================="
-                  echo "📋 Detailed logs for PM2 process ID: $id"
-                  echo "=========================================="
+                  echo "=== Logs for PM2 process ID: $id ==="
                   pm2 logs $id --lines 100 --nostream || echo "Could not retrieve logs for process $id"
-                  echo ""
                 done
               fi
             fi
