@@ -19,15 +19,34 @@ jobs:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Configure SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          
+          # Set default user to ubuntu if not specified
+          SSH_USER=${SSH_USER:-ubuntu}
+          
+          # Create SSH config to force ubuntu user
+          cat > ~/.ssh/config << EOF
+          Host $SSH_HOST
+            User $SSH_USER
+            StrictHostKeyChecking no
+            UserKnownHostsFile ~/.ssh/known_hosts
+            PreferredAuthentications publickey
+            IdentitiesOnly yes
+          EOF
+          chmod 600 ~/.ssh/config
           
           # Verify SSH agent has the key loaded
           echo "SSH keys loaded in agent:"
           ssh-add -l || echo "Warning: No keys found in SSH agent"
+          echo ""
+          echo "SSH will connect as user: $SSH_USER"
 
       - name: Deploy and restart PM2
         env:
@@ -57,11 +76,8 @@ jobs:
           echo "SSH host: $SSH_HOST"
           echo "Starting deployment to $SSH_USER@$SSH_HOST:$DEPLOY_PATH"
           
-          # Use explicit user format to ensure ubuntu user is used
-          ssh -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=~/.ssh/known_hosts \
-              -o PreferredAuthentications=publickey \
-              "$SSH_USER@$SSH_HOST" "DEPLOY_PATH='$DEPLOY_PATH' GIT_REPO_URL='$REPO_URL' bash -s" << 'ENDSSH'
+          # Use SSH config file which forces ubuntu user
+          if ! ssh $SSH_HOST "DEPLOY_PATH='$DEPLOY_PATH' GIT_REPO_URL='$REPO_URL' bash -s" << 'ENDSSH'
             set -e
             
             # Create deployment directory if it doesn't exist
@@ -116,8 +132,22 @@ jobs:
             echo "PM2 Status:"
             pm2 status
           ENDSSH
-          
-          echo "Deployment completed successfully"
+          then
+            echo "Deployment completed successfully"
+          else
+            echo ""
+            echo "=========================================="
+            echo "SSH Connection Failed!"
+            echo "=========================================="
+            echo "The SSH key in SSH_PRIVATE_KEY secret appears to be authorized for 'root' user, not 'ubuntu'."
+            echo ""
+            echo "To fix this, you need to:"
+            echo "1. Add the public key to /home/ubuntu/.ssh/authorized_keys on your EC2 server"
+            echo "2. Remove it from /root/.ssh/authorized_keys (if present)"
+            echo ""
+            echo "Or generate a new key pair specifically for the ubuntu user."
+            exit 1
+          fi
 
       - name: Capture PM2 logs on failure
         if: failure()
@@ -131,11 +161,8 @@ jobs:
           
           echo "Capturing PM2 logs due to deployment failure..."
           
-          # Use explicit user format to ensure ubuntu user is used
-          ssh -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=~/.ssh/known_hosts \
-              -o PreferredAuthentications=publickey \
-              "$SSH_USER@$SSH_HOST" "cd '$DEPLOY_PATH' && bash -s" << 'ENDSSH'
+          # Use SSH config file which forces ubuntu user
+          ssh $SSH_HOST "cd '$DEPLOY_PATH' && bash -s" << 'ENDSSH'
             echo "=== PM2 Status ==="
             pm2 status || echo "PM2 status command failed"
             echo ""
