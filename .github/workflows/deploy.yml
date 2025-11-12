@@ -24,24 +24,6 @@ jobs:
           chmod 700 ~/.ssh
           ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
-          
-          # Verify SSH agent is running and has keys
-          echo "SSH Agent Status:"
-          ssh-add -l || echo "No keys in SSH agent"
-
-      - name: Test SSH connection
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-        run: |
-          echo "Testing SSH connection to $SSH_USER@$SSH_HOST..."
-          ssh -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=~/.ssh/known_hosts $SSH_USER@$SSH_HOST "echo 'SSH connection successful'" || {
-            echo "SSH connection failed. Please verify:"
-            echo "1. SSH_PRIVATE_KEY secret is correctly formatted"
-            echo "2. SSH_HOST and SSH_USER secrets are correct"
-            echo "3. The public key is added to ~/.ssh/authorized_keys on the server"
-            exit 1
-          }
 
       - name: Deploy and restart PM2
         env:
