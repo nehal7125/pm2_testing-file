@@ -108,6 +108,14 @@ jobs:
               git pull origin main
             fi
             
+            # Install dependencies
+            if [ -f "package.json" ]; then
+              echo "Installing npm dependencies..."
+              npm install
+            else
+              echo "No package.json found, skipping npm install"
+            fi
+            
             # Restart PM2 processes
             echo "Stopping PM2 processes..."
             pm2 stop all || true
@@ -138,15 +146,6 @@ jobs:
             echo ""
             echo "=========================================="
             echo "SSH Connection Failed!"
-            echo "=========================================="
-            echo "The SSH key in SSH_PRIVATE_KEY secret appears to be authorized for 'root' user, not 'ubuntu'."
-            echo ""
-            echo "To fix this, you need to:"
-            echo "1. Add the public key to /home/ubuntu/.ssh/authorized_keys on your EC2 server"
-            echo "2. Remove it from /root/.ssh/authorized_keys (if present)"
-            echo ""
-            echo "Or generate a new key pair specifically for the ubuntu user."
-            exit 1
           fi
 
       - name: Capture PM2 logs on failure

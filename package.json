@@ -1,0 +1,13 @@
+{
+  "name": "hello-world-pm2",
+  "version": "1.0.0",
+  "description": "A simple Hello World application for PM2 deployment",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "keywords": ["hello", "world", "pm2"],
+  "author": "",
+  "license": "ISC"
+}
+
