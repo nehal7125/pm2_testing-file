@@ -1,0 +1,172 @@
+name: Deploy to Excloud with PM2
+
+on:
+  push:
+    branches:
+      - main  # Change this to your default branch (main, master, etc.)
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy and restart PM2
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -e
+          
+          echo "🚀 Starting deployment..."
+          
+          # SSH into the server and execute deployment commands
+          ssh $SSH_USER@$SSH_HOST "cd '$DEPLOY_PATH' && bash -s" << 'ENDSSH'
+            set -e
+            
+            echo "📍 Current directory: $(pwd)"
+            
+            # Pull latest code
+            echo "📥 Pulling latest code..."
+            git pull origin main || git pull origin master || git pull
+            
+            # Stop PM2 processes
+            echo "🛑 Stopping PM2 processes..."
+            pm2 stop all || echo "No PM2 processes to stop"
+            
+            # Start PM2 processes
+            echo "▶️ Starting PM2 processes..."
+            pm2 start ecosystem.config.js || pm2 start app.js || pm2 start npm -- start || echo "PM2 start command failed"
+            
+            # Save PM2 process list
+            pm2 save || echo "PM2 save failed"
+            
+            # Wait a moment for processes to initialize
+            sleep 5
+            
+            # Check PM2 status
+            echo "📊 Checking PM2 status..."
+            pm2 status
+            
+            # Get list of PM2 process IDs
+            PM2_LIST=$(pm2 jlist 2>/dev/null || echo "[]")
+            
+            # Check each process and capture logs if any are down
+            echo "🔍 Checking for failed processes..."
+            FAILED_PROCESSES=""
+            
+            # Check if jq is available, if not use alternative method
+            if command -v jq &> /dev/null; then
+              # Parse PM2 list and check each process using jq
+              for id in $(echo "$PM2_LIST" | jq -r '.[] | .pm_id' 2>/dev/null); do
+                STATUS=$(echo "$PM2_LIST" | jq -r ".[] | select(.pm_id == $id) | .pm2_env.status" 2>/dev/null)
+                
+                if [ "$STATUS" != "online" ]; then
+                  echo "❌ Process $id is not online (status: $STATUS)"
+                  FAILED_PROCESSES="$FAILED_PROCESSES $id"
+                else
+                  echo "✅ Process $id is online"
+                fi
+              done
+            else
+              # Alternative method without jq - check PM2 status output
+              echo "⚠️ jq not available, using alternative status check..."
+              PM2_STATUS_OUTPUT=$(pm2 status --no-color 2>/dev/null || echo "")
+              if echo "$PM2_STATUS_OUTPUT" | grep -q "errored\|stopped"; then
+                echo "❌ Some PM2 processes are not running"
+                # Get process IDs from status
+                FAILED_IDS=$(pm2 jlist 2>/dev/null | grep -o '"pm_id":[0-9]*' | grep -o '[0-9]*' || echo "")
+                for id in $FAILED_IDS; do
+                  STATUS=$(pm2 describe $id 2>/dev/null | grep "status" | head -1 || echo "")
+                  if echo "$STATUS" | grep -qv "online"; then
+                    FAILED_PROCESSES="$FAILED_PROCESSES $id"
+                  fi
+                done
+              else
+                echo "✅ All PM2 processes appear to be running"
+              fi
+            fi
+            
+            # If there are failed processes, capture their logs
+            if [ ! -z "$FAILED_PROCESSES" ]; then
+              echo "⚠️ Found failed processes. Capturing logs..."
+              for id in $FAILED_PROCESSES; do
+                echo "=========================================="
+                echo "📋 Logs for PM2 process ID: $id"
+                echo "=========================================="
+                pm2 logs $id --lines 100 --nostream || pm2 logs $id --lines 50 --nostream || echo "Could not retrieve logs for process $id"
+                echo ""
+              done
+              exit 1
+            else
+              echo "✅ All PM2 processes are running successfully!"
+            fi
+          ENDSSH
+
+      - name: Capture PM2 logs on failure
+        if: failure()
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          echo "🔍 Capturing detailed PM2 logs due to deployment failure..."
+          
+          ssh $SSH_USER@$SSH_HOST "cd '$DEPLOY_PATH' && bash -s" << 'ENDSSH'
+            set -e
+            
+            echo "=========================================="
+            echo "📊 Full PM2 Status"
+            echo "=========================================="
+            pm2 status || echo "PM2 status command failed"
+            echo ""
+            
+            echo "=========================================="
+            echo "📋 PM2 Process List (JSON)"
+            echo "=========================================="
+            pm2 jlist || echo "PM2 jlist command failed"
+            echo ""
+            
+            echo "=========================================="
+            echo "📋 All PM2 Logs (Last 200 lines)"
+            echo "=========================================="
+            pm2 logs --lines 200 --nostream || echo "PM2 logs command failed"
+            echo ""
+            
+            # Get all process IDs and show individual logs
+            PM2_LIST=$(pm2 jlist 2>/dev/null || echo "[]")
+            if [ "$PM2_LIST" != "[]" ] && [ ! -z "$PM2_LIST" ]; then
+              if command -v jq &> /dev/null; then
+                for id in $(echo "$PM2_LIST" | jq -r '.[] | .pm_id' 2>/dev/null); do
+                  echo "=========================================="
+                  echo "📋 Detailed logs for PM2 process ID: $id"
+                  echo "=========================================="
+                  pm2 logs $id --lines 100 --nostream || echo "Could not retrieve logs for process $id"
+                  echo ""
+                done
+              else
+                # Alternative: get IDs from PM2 status
+                PM2_IDS=$(pm2 jlist 2>/dev/null | grep -o '"pm_id":[0-9]*' | grep -o '[0-9]*' || echo "")
+                for id in $PM2_IDS; do
+                  echo "=========================================="
+                  echo "📋 Detailed logs for PM2 process ID: $id"
+                  echo "=========================================="
+                  pm2 logs $id --lines 100 --nostream || echo "Could not retrieve logs for process $id"
+                  echo ""
+                done
+              fi
+            fi
+          ENDSSH
+
