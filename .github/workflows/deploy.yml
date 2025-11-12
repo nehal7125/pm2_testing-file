@@ -34,9 +34,23 @@ jobs:
         run: |
           set -e
           
-          echo "Starting deployment to $SSH_HOST:$DEPLOY_PATH"
+          # Ensure SSH_USER defaults to ubuntu if empty, and validate it's not root
+          SSH_USER=${SSH_USER:-ubuntu}
           
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=~/.ssh/known_hosts $SSH_USER@$SSH_HOST "DEPLOY_PATH='$DEPLOY_PATH' GIT_REPO_URL='$GIT_REPO_URL' bash -s" << 'ENDSSH'
+          if [ "$SSH_USER" = "root" ]; then
+            echo "Error: SSH_USER cannot be 'root'. Please set SSH_USER secret to 'ubuntu'"
+            exit 1
+          fi
+          
+          # Convert git:// URL to https:// if needed
+          REPO_URL="$GIT_REPO_URL"
+          if [[ "$REPO_URL" == git://* ]]; then
+            REPO_URL=$(echo "$REPO_URL" | sed 's|git://|https://|')
+          fi
+          
+          echo "Starting deployment to $SSH_USER@$SSH_HOST:$DEPLOY_PATH"
+          
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=~/.ssh/known_hosts $SSH_USER@$SSH_HOST "DEPLOY_PATH='$DEPLOY_PATH' GIT_REPO_URL='$REPO_URL' bash -s" << 'ENDSSH'
             set -e
             
             # Create deployment directory if it doesn't exist
@@ -101,6 +115,9 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
+          # Ensure SSH_USER defaults to ubuntu if empty
+          SSH_USER=${SSH_USER:-ubuntu}
+          
           echo "Capturing PM2 logs due to deployment failure..."
           
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=~/.ssh/known_hosts $SSH_USER@$SSH_HOST "cd '$DEPLOY_PATH' && bash -s" << 'ENDSSH'
