@@ -24,6 +24,10 @@ jobs:
           chmod 700 ~/.ssh
           ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          
+          # Verify SSH agent has the key loaded
+          echo "SSH keys loaded in agent:"
+          ssh-add -l || echo "Warning: No keys found in SSH agent"
 
       - name: Deploy and restart PM2
         env:
@@ -48,9 +52,16 @@ jobs:
             REPO_URL=$(echo "$REPO_URL" | sed 's|git://|https://|')
           fi
           
+          # Verify SSH_USER is set correctly
+          echo "Using SSH user: $SSH_USER"
+          echo "SSH host: $SSH_HOST"
           echo "Starting deployment to $SSH_USER@$SSH_HOST:$DEPLOY_PATH"
           
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=~/.ssh/known_hosts $SSH_USER@$SSH_HOST "DEPLOY_PATH='$DEPLOY_PATH' GIT_REPO_URL='$REPO_URL' bash -s" << 'ENDSSH'
+          # Use explicit user format to ensure ubuntu user is used
+          ssh -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o PreferredAuthentications=publickey \
+              "$SSH_USER@$SSH_HOST" "DEPLOY_PATH='$DEPLOY_PATH' GIT_REPO_URL='$REPO_URL' bash -s" << 'ENDSSH'
             set -e
             
             # Create deployment directory if it doesn't exist
@@ -120,7 +131,11 @@ jobs:
           
           echo "Capturing PM2 logs due to deployment failure..."
           
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=~/.ssh/known_hosts $SSH_USER@$SSH_HOST "cd '$DEPLOY_PATH' && bash -s" << 'ENDSSH'
+          # Use explicit user format to ensure ubuntu user is used
+          ssh -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o PreferredAuthentications=publickey \
+              "$SSH_USER@$SSH_HOST" "cd '$DEPLOY_PATH' && bash -s" << 'ENDSSH'
             echo "=== PM2 Status ==="
             pm2 status || echo "PM2 status command failed"
             echo ""
