@@ -1,7 +1,7 @@
 # CI/CD Pipeline for PM2 Deployment
 
 This repository contains a GitHub Actions workflow that automatically deploys your application to an AWS EC2 instance (Ubuntu) and manages PM2 processes.
-
+Testing the user
 ## Features
 redeploy
 - ✅ Automatic deployment on code push
