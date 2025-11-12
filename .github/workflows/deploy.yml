@@ -74,6 +74,20 @@ jobs:
             echo "Starting PM2 processes..."
             pm2 start ecosystem.config.js || pm2 start app.js || pm2 start npm -- start
             
+            # Wait a moment for processes to initialize
+            sleep 2
+            
+            # Get and display process IDs assigned by PM2
+            echo ""
+            echo "PM2 Process IDs (assigned by PM2):"
+            PM2_LIST=$(pm2 jlist 2>/dev/null || echo "[]")
+            if command -v jq &> /dev/null; then
+              echo "$PM2_LIST" | jq -r '.[] | select(.pm2_env.status == "online") | "ID: \(.pm_id) | Name: \(.name) | Status: \(.pm2_env.status)"'
+            else
+              pm2 list
+            fi
+            
+            echo ""
             echo "PM2 Status:"
             pm2 status
           ENDSSH
